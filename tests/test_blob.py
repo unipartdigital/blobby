@@ -20,6 +20,22 @@ def get_object_response(data):
     }
 
 
+class TestAsyncBlobReader:
+    @pytest.mark.asyncio
+    async def test_real(self):
+        import aioboto3
+        s3 = aioboto3.resource('s3', endpoint_url='https://cdn.mb1.unipart.io/')
+        #async with session.create_client('s3', endpoint_url='https://cdn.mb1.unipart.io/') as s3:
+        reader = blob.AsyncBlobReader(s3.Bucket('datapipe-blobs'), 'test-file')
+        assert await reader.read() == b'test'
+        assert await reader.seek(0) == 0
+        async with reader.as_fifo() as fd:
+            assert await fd.read() == b'test'
+        reader = blob.AsyncBlobReader(s3.Bucket('datapipe-blobs'), 'test-file')
+        async with reader.as_tempfile() as fd:
+            assert await fd.read() == b'test'
+
+
 class TestBlobReader:
     def test_read(self, reader, stubber):
         stubber.add_response('head_object',
@@ -30,6 +46,13 @@ class TestBlobReader:
                              {'Bucket': 'mock-bucket', 'Key': 'test', 'Range': 'bytes=0-'})
 
         assert reader.read() == b'test'
+
+    def test_real(self):
+        import boto3
+        s3 = boto3.resource('s3', endpoint_url='https://cdn.mb1.unipart.io/')
+        bucket = s3.Bucket('datapipe-blobs')
+        reader = blob.BlobReader(bucket, 'test-file')
+        assert reader.read()
 
     def test_read_error(self, reader, stubber):
         # NOTE: we believe that such an error would always raise an

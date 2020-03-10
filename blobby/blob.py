@@ -1,3 +1,5 @@
+import asyncio
+from functools import partial
 from typing import BinaryIO, Callable, List, IO, Type, TypeVar, Iterator
 
 import hashlib
@@ -6,11 +8,13 @@ import logging
 import os
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
 from inspect import getmembers, isfunction, getdoc
 
+import aiofiles
 from mypy_boto3_s3.service_resource import Bucket as S3Bucket
 from botocore.response import StreamingBody
+from aiobotocore.response import StreamingBody as AStreamingBody
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,156 @@ def inherit_docstrings(cls: Type[T]) -> Type[T]:
             m.__doc__ = getdoc(m)  # pragma: no cover
 
     return cls
+
+
+@inherit_docstrings
+class AsyncBlobReader(aiofiles.threadpool.binary.AsyncFileIO):
+    def __init__(self, s3_bucket: S3Bucket, key: str) -> None:
+        self.object = s3_bucket.Object(key=key)
+        self.position = 0
+
+    @asynccontextmanager
+    async def as_fifo(self) -> Iterator[BinaryIO]:
+        # Technically blocking
+        with tempfile.TemporaryDirectory() as dir:
+            path = os.path.join(dir, 'fifo')
+            # Technically blocking
+            os.mkfifo(path, mode=0o600)
+            fd_w_coro = aiofiles.open(path, 'wb')
+            fd_r_coro = aiofiles.open(path, 'rb')
+            # Open the read and write ends concurrently (each waits for the
+            # other end to be open before yielding control)
+            fd_w, fd_r = await asyncio.gather(fd_w_coro, fd_r_coro)
+            writer = asyncio.create_task(self._fifo_writer(fd_w))
+
+            yield fd_r
+            await writer
+
+    async def _fifo_writer(self, fd):
+        """Read from self and write to fd"""
+        q = asyncio.Queue()
+
+        # The writer also reads from the actual stream
+        async def read_stream():
+            async for chunk in self:
+                await q.put(chunk)
+            await q.put(None)
+
+        async def write_to_fd():
+            while True:
+                chunk = await q.get()
+                if chunk is None:
+                    break
+                await fd.write(chunk)
+            await fd.close()
+
+        await asyncio.gather(read_stream(), write_to_fd())
+
+    @asynccontextmanager
+    async def as_tempfile(self, chunk_size: int = 1000000) -> Iterator[IO[bytes]]:
+        """Context manager which downloads the object to
+        a temporary file and returns a file descriptor for it.
+
+        Returns: the open temporary file, which will be closed by the
+            context manager.
+        """
+        q = asyncio.Queue()
+
+        async def reader():
+            async for chunk in self:
+                await q.put(chunk)
+            await q.put(None)
+
+        async def writer(fd):
+            while True:
+                chunk = await q.get()
+                if chunk is None:
+                    break
+                await fd.write(chunk)
+
+        mode = 'w+b'
+        # Technically blocking
+        with tempfile.TemporaryFile(mode) as fd:
+            afd = await aiofiles.open(fd.fileno(), mode)
+            await asyncio.gather(reader(), writer(afd))
+            await afd.seek(0)
+            yield afd
+
+    async def seekable(self) -> bool:
+        return True
+
+    async def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        old_position = self.position
+
+        if whence == io.SEEK_SET:
+            self.position = offset
+        elif whence == io.SEEK_CUR:
+            self.position += offset
+        elif whence == io.SEEK_END:
+            self.position = await self.length() + offset
+        else:
+            raise ValueError(
+                f'whence must be one of {self.WHENCE_LIST}, not {whence}.'
+            )
+        if self.position < 0:
+            self.position = old_position
+            raise ValueError(
+                f'seek would result in negative position {self.position}'
+            )
+
+        return self.position
+
+    async def _read(self, size: int = -1) -> AStreamingBody:
+        # GetObject will be unhappy if we try to read from beyond the
+        # end of the object.
+        if self.position >= await self.length():
+            return b''
+
+        if size == -1:
+            range = f'bytes={self.position}-'
+            await self.seek(0, io.SEEK_END)
+        else:
+            # But it's fine to specify a range that goes beyond the end
+            # if it starts before.
+            # Subtract one because the range is inclusive.
+            range = f'bytes={self.position}-{self.position + size - 1}'
+            await self.seek(size, io.SEEK_CUR)
+
+        # For some reason boto3 type stubs get the type wrong here.
+        # Explanation:
+        #   a GetObject response has a Body parameter which in normal
+        # circumstances is always of type StreamingBody.
+        # Code in botocore.endpoint is responsible for creating the
+        # StreamingBody object. But the result could instead be a string
+        # (if there is an error) or bytes (if handling a different
+        # parameter.)
+        response = await self.object.get(Range=range)
+        status = response['ResponseMetadata']['HTTPStatusCode']  # type: ignore
+        if status > 300:
+            raise BlobError(f'Received status code {status} '
+                            f'when getting blob {self.object}')
+        # Make the assumption that the typecheck ignore is making
+        # explicit
+        assert isinstance(response['Body'], AStreamingBody), (
+            f"Response from S3 of type {type(response['Body'])}, "
+            f"not StreamingBody.")
+
+        return response['Body']  # type: ignore
+
+    async def read(self, size: int = -1) -> bytes:
+        body = await self._read(size)
+        return await body.read()
+
+    async def __aiter__(self):
+        stream = await self._read()
+        async for chunk in stream:
+            yield chunk
+
+    async def length(self):
+        return await self.object.content_length
+
+    def __len__(self):
+        return asyncio.run(self.length())
 
 
 @inherit_docstrings
