@@ -1,0 +1,22 @@
+language: python
+python:
+  - "3.7"
+  - "3.8"
+  - "nightly"
+jobs:
+  allow_failures:
+    - python: "nightly"
+install:
+  - pip install pipenv
+  - pipenv install --dev
+script: ./ci.sh
+#after_success:
+#  - coveralls
+#deploy:
+#  provider: pypi
+#  distributions: "sdist bdist_wheel"
+#  skip_existing: true
+#  user: $PYPI_USER
+#  password: $PYPI_PASSWORD
+#  on:
+#    tags: true
