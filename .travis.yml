@@ -7,8 +7,7 @@ jobs:
   allow_failures:
     - python: "nightly"
 install:
-  - pip install pipenv
-  - pipenv install --dev
+  - pip install -e .[dev]
 script: ./ci.sh
 #after_success:
 #  - coveralls

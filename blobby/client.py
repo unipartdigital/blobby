@@ -21,7 +21,9 @@ class StorageClient:
                  s3: Optional[ServiceResource] = None) -> None:
         self.session = boto3.session.Session()
         if s3 is None:
-            self.s3 = self.session.resource('s3', endpoint_url=endpoint_url)
+            self.s3 = self.session.resource(
+                's3', endpoint_url=endpoint_url
+            )  # pragma: no cover
         else:
             self.s3 = s3
 
