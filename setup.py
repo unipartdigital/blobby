@@ -23,7 +23,10 @@ setup(
         "dev": [
             "boto3-stubs[s3]",
             "botocore-stubs @ git+https://github.com/boto/botostubs.git#egg=botocore-stubs-0.0.1&subdirectory=botocore-stubs",
-            "flake8", "mypy", "pytest",
+            "coveralls",
+            "flake8",
+            "mypy",
+            "pytest",
             "pytest-cov"
         ]
     },

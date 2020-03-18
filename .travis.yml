@@ -9,8 +9,8 @@ jobs:
 install:
   - pip install -e .[dev]
 script: ./ci.sh
-#after_success:
-#  - coveralls
+after_success:
+  - coveralls
 #deploy:
 #  provider: pypi
 #  distributions: "sdist bdist_wheel"
