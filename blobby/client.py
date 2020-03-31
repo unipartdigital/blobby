@@ -1,3 +1,4 @@
+import os
 from functools import partial
 from typing import Optional
 
@@ -13,12 +14,15 @@ class StorageError(Exception):
 
 
 class StorageClient:
-    chunk_size = 1024
-
     def __init__(self,
-                 store_name: str,
-                 endpoint_url: str,
-                 s3: Optional[ServiceResource] = None) -> None:
+                 store_name: Optional[str] = None,
+                 endpoint_url: Optional[str] = None,
+                 s3: Optional[ServiceResource] = None,
+                 chunk_size: int = 1024) -> None:
+        if store_name is None:
+            store_name = os.environ.get('BLOBS_STORE_NAME')
+        if endpoint_url is None:
+            endpoint_url = os.environ.get('BLOBS_STORE_URL')
         self.session = boto3.session.Session()
         if s3 is None:
             self.s3 = self.session.resource(
@@ -26,13 +30,14 @@ class StorageClient:
             )  # pragma: no cover
         else:
             self.s3 = s3
+        self.chunk_size = chunk_size
 
         self.bucket = self.s3.Bucket(store_name)
 
     def get(self, key: str) -> bytes:
         """Get the contents of an object.
 
-        Use get_reader to retrieve an object with more flexibility for
+        Use get_reader if you need an object with more flexibility for
         retrieving objects.
 
         Arguments:
@@ -70,13 +75,8 @@ class StorageClient:
     def create_writer(self) -> blob.BlobWriter:
         """Return a blob.BlobWriter object for uploading to the store.
 
-        See BlobWriter's docs for full usage, but in summary: call
-        `write()` with data, then `flush()` (or `close()`) to upload.
-        The object will be written with an auto-assigned key, which can
-        be retrieved with the writer's `key()` method after the final
-        `write()`.
-        The object will be `flush`ed and hence written automatically
-        unless you call the `cancel()` method.
+        See BlobWriter's docs for full usage and in particular for
+        deviations from normal file-like object behaviour.
         """
         writer = blob.BlobWriter(self.bucket)
         return writer
