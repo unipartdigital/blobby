@@ -22,6 +22,14 @@ class BlobError(Exception):
 
 
 def inherit_docstrings(cls: Type[T]) -> Type[T]:
+    """Decorator which supplies unset docstrings from superclasses.
+
+    Any function on the subclass which deviates from the functionality
+    or API of the superclass should therefore specify a docstring to
+    prevent the resulting docstrings from being misleading.
+
+    Superclass docstrings are found using `inspect.getdoc`.
+    """
     for m in getmembers(cls):
         if isfunction(m) and not m.__doc__:
             m.__doc__ = getdoc(m)  # pragma: no cover
@@ -42,7 +50,11 @@ class BlobReader(io.RawIOBase):
 
     @contextmanager
     def as_fifo(self) -> Iterator[BinaryIO]:
-        """Context manager which creates a FIFO and writes the blob to it.
+        """Context manager which returns a FIFO which will contain the blob.
+
+        The contents of the blob are downloaded in a background thread
+        and written to the FIFO. If this context manager is exited before
+        that has finished, it will block until the thread finishes.
 
         Returns: an open file object of the read end of the FIFO, which
             will be closed by the context manager.
@@ -51,14 +63,14 @@ class BlobReader(io.RawIOBase):
             path = os.path.join(dir, 'fifo')
             os.mkfifo(path, mode=0o600)
             writer = threading.Thread(
-                target=self._fifo_writer, args=(path,)
+                target=self._write_to_fifo, args=(path,)
             )
             writer.start()
             with open(path, 'rb') as fd_r:
                 yield fd_r
                 writer.join()
 
-    def _fifo_writer(self, path: str) -> None:
+    def _write_to_fifo(self, path: str) -> None:
         self.seek(0)
         with open(path, 'wb') as fd_w:
             fd_w.write(self.read())
@@ -134,9 +146,11 @@ class BlobReader(io.RawIOBase):
                             f'when getting blob {self.object}')
         # Make the assumption that the typecheck ignore is making
         # explicit
-        assert isinstance(response['Body'], StreamingBody), (
-            f"Response from S3 of type {type(response['Body'])}, "
-            f"not StreamingBody.")
+        if not isinstance(response['Body'], StreamingBody):
+            raise TypeError(
+                f"Response from S3 of type {type(response['Body'])}, "
+                f"not StreamingBody."
+            )
 
         return response['Body'].read()  # type: ignore
 
@@ -159,6 +173,8 @@ class BlobReader(io.RawIOBase):
 
 
 WriterCallback = Callable[[str], None]
+
+
 @inherit_docstrings
 class BlobWriter(io.BufferedIOBase):
     """A file-like object wrapping an S3 blob with an automatic key.
@@ -226,8 +242,11 @@ class BlobWriter(io.BufferedIOBase):
         key = self.key()
         self.buffer.seek(0)
         logger.debug('Uploading %d bytes to %s', nbytes, key)
-        # boto3 closes the buffer after this.
         self.bucket.upload_fileobj(self.buffer, key)
+        # Note: the above closes the buffer in practice, but this is not
+        # part of the API. Ensure consistent behaviour:
+        if not self.buffer.closed:
+            self.buffer.close()
         logger.info('Wrote %s to %s', key, self.bucket)
 
         for cb in self.callbacks:

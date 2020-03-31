@@ -10,7 +10,7 @@ setup(
     long_description_content_type='text/markdown',
     name='blobby',
     version='0.0.0',
-    description='This package provides a simple abstraction to an object store.',
+    description='A library to provide a simple abstraction of an object store.',
     python_requires='~=3.7',
     packages=['blobby'],
     package_dir={"": "."},

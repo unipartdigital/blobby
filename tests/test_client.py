@@ -23,16 +23,20 @@ def test_client_reader(storage_client, blob_reader_mock):
     assert storage_client.create_reader('test').read() == b'mocked'
 
 
-def test_client_put(storage_client, blob_writer_mock, tmp_file):
-    assert storage_client.put(tmp_file) == 'mock_key'
+def test_client_put(storage_client, blob_writer_mock, tmp_path):
+    path = tmp_path / 'test'
+    path.open('wb').write(b'test')
+    assert storage_client.put(path) == 'mock_key'
 
 
-def test_client_put_error(storage_client, stubber, tmp_file):
+def test_client_put_error(storage_client, stubber, tmp_path):
     stubber.add_client_error('put_object', 'broken', 'bad', 400)
     # Without mocking the writer, this will attempt to access a non-
     # -existent endpoint on example.com and hence fail.
     with pytest.raises(client.StorageError):
-        storage_client.put(tmp_file)
+        path = tmp_path / 'test'
+        path.open('wb').write(b'test')
+        storage_client.put(path)
 
 
 def test_client_writer(storage_client, blob_writer_mock):

@@ -58,7 +58,7 @@ class TestBlobReader:
                              },
                              {'Bucket': 'mock-bucket', 'Key': 'test', 'Range': 'bytes=0-'})
 
-        with pytest.raises(AssertionError):
+        with pytest.raises(TypeError):
             reader.read()
 
     def test_read_from(self, reader, stubber):

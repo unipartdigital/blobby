@@ -1,6 +1,5 @@
 import os
 import tempfile
-
 import boto3
 from botocore.stub import Stubber
 from pytest import fixture
@@ -78,19 +77,4 @@ def blob_writer_mock(monkeypatch):
 @fixture
 def storage_client(s3):
     storage = client.StorageClient('mock-bucket', 'http://example.com', s3)
-    #storage.s3 = s3
-    #storage.bucket = s3.Bucket('test')
     yield storage
-
-
-@fixture
-def tmp_file():
-    fd, name = tempfile.mkstemp()
-    try:
-        os.write(fd, b'test')
-        yield name
-    finally:
-        os.close(fd)
-        os.unlink(name)
-
-
