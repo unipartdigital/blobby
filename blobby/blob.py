@@ -200,9 +200,12 @@ class BlobReader(io.RawIOBase):
         str(t) for t in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END)
     )
 
-    def __init__(self, s3_bucket: S3Bucket, key: str) -> None:
-        self.object = s3_bucket.Object(key=key)
-        self.position = 0
+    def __init__(self, session, bucket_name: str, key: str) -> None:
+        async_bucket = session.resource(
+            's3'
+            endpoint_url=s3_bucket.meta.client._endpoint.host
+        ).Bucket(s3_bucket.name)
+        self.wrapped = AsyncBlobReader(async_bucket, key)
 
     @contextmanager
     def as_fifo(self) -> Iterator[BinaryIO]:
@@ -244,82 +247,28 @@ class BlobReader(io.RawIOBase):
             yield fd
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        old_position = self.position
-
-        if whence == io.SEEK_SET:
-            self.position = offset
-        elif whence == io.SEEK_CUR:
-            self.position += offset
-        elif whence == io.SEEK_END:
-            self.position = self.object.content_length + offset
-        else:
-            raise ValueError(
-                f'whence must be one of {self.WHENCE_LIST}, not {whence}.'
-            )
-        if self.position < 0:
-            self.position = old_position
-            raise ValueError(
-                f'seek would result in negative position {self.position}'
-            )
-
-        return self.position
+        return asyncio.run(self.wrapped.seek(offset, whence))
 
     def seekable(self) -> bool:
         return True
 
     def read(self, size: int = -1) -> bytes:
-        # GetObject will be unhappy if we try to read from beyond the
-        # end of the object.
-        if self.position >= len(self):
-            return b''
-
-        if size == -1:
-            range = f'bytes={self.position}-'
-            self.seek(0, io.SEEK_END)
-        else:
-            # But it's fine to specify a range that goes beyond the end
-            # if it starts before.
-            # Subtract one because the range is inclusive.
-            range = f'bytes={self.position}-{self.position + size - 1}'
-            self.seek(size, io.SEEK_CUR)
-
-        # For some reason boto3 type stubs get the type wrong here.
-        # Explanation:
-        #   a GetObject response has a Body parameter which in normal
-        # circumstances is always of type StreamingBody.
-        # Code in botocore.endpoint is responsible for creating the
-        # StreamingBody object. But the result could instead be a string
-        # (if there is an error) or bytes (if handling a different
-        # parameter.)
-        response = self.object.get(Range=range)
-        status = response['ResponseMetadata']['HTTPStatusCode']  # type: ignore
-        if status > 300:
-            raise BlobError(f'Received status code {status} '
-                            f'when getting blob {self.object}')
-        # Make the assumption that the typecheck ignore is making
-        # explicit
-        assert isinstance(response['Body'], StreamingBody), (
-            f"Response from S3 of type {type(response['Body'])}, "
-            f"not StreamingBody.")
-
-        return response['Body'].read()  # type: ignore
+        return asyncio.run(self.wrapped.read(size))
 
     def readinto(self, b: bytearray) -> int:
-        to_read = min(len(self) - self.position, len(b))
-        b[:to_read] = self.read(to_read)
-        return to_read
+        return asyncio.run(self.wrapped.readinto(b))
 
     def readable(self) -> bool:
         return True
 
     def tell(self) -> int:
-        return self.position
+        return asyncio.run(self.wrapped.tell())
 
     def __repr__(self) -> str:
-        return f'<{type(self).__name__} wrapping {self.object}>'
+        return f'<{type(self).__name__} wrapping {repr(self.wrapped)}>'
 
     def __len__(self) -> int:
-        return self.object.content_length
+        return len(self.wrapped)
 
 
 WriterCallback = Callable[[str], None]
